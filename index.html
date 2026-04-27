@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>マイナンバー窓口判断支援アプリ</title>
+    
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon.png">
+    <meta name="theme-color" content="#1e40af">
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        /* PWA用アプリアイコン等のハイライト無効化 */
+        * { -webkit-tap-highlight-color: transparent; }
+        /* スムーズな画面遷移 */
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 flex flex-col h-screen overflow-hidden">
+
+    <header class="bg-blue-800 text-white p-4 shadow-md flex-none z-10">
+        <div class="flex justify-between items-center mb-3">
+            <h1 class="text-lg font-bold flex items-center">
+                <i data-lucide="shield-check" class="mr-2"></i> 窓口判断ナビ
+            </h1>
+            <button onclick="goHome()" class="p-2 bg-blue-700 rounded-lg shadow-sm hover:bg-blue-600 active:bg-blue-900 transition flex items-center text-sm font-bold">
+                <i data-lucide="rotate-ccw" class="w-4 h-4 mr-1"></i> 最初から
+            </button>
+        </div>
+        <div class="relative">
+            <i data-lucide="search" class="absolute left-3 top-2.5 text-gray-400 w-5 h-5"></i>
+            <input type="text" id="searchInput" placeholder="キーワード検索 (例: 転送, ケアマネ)" class="w-full pl-10 pr-4 py-2 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400 shadow-inner text-base">
+        </div>
+    </header>
+
+    <main id="appContent" class="flex-1 overflow-y-auto p-4 pb-24 fade-in">
+        </main>
+
+    <script>
+        // 【1】ロジックデータベース
+        const db = {
+            categories: [
+                { id: 'c1', title: '本人確認・有効期限', icon: 'user', color: 'bg-indigo-500' },
+                { id: 'c2', title: '特殊な本人確認', icon: 'users', color: 'bg-emerald-500' },
+                { id: 'c3', title: '代理人・来庁困難', icon: 'user-plus', color: 'bg-amber-500' },
+                { id: 'c4', title: '顔認証カード切替', icon: 'scan-face', color: 'bg-pink-500' },
+                { id: 'c5', title: '電子証明書・暗証番号', icon: 'key', color: 'bg-purple-500' },
+                { id: 'c6', title: '郵便転送・DV避難', icon: 'mail-warning', color: 'bg-red-500' },
+                { id: 'c7', title: '氏名の振り仮名', icon: 'type', color: 'bg-cyan-600' },
+                { id: 'c8', title: '再交付手数料', icon: 'coins', color: 'bg-orange-500' }
+            ],
+            nodes: {
+                // --- Category 1: 本人確認・有効期限 ---
+                'c1_start': {
+                    type: 'question', text: '確認したい事項を選択してください',
+                    options: [
+                        { text: '本人確認書類の基礎判定(A類/B類)', next: 'c1_basic' },
+                        { text: '提示されたカードの有効期限切れ', next: 'c1_exp_q' },
+                        { text: '運転免許証等の住所が旧住所のまま', next: 'c1_add_q' }
+                    ]
+                },
+                'c1_basic': {
+                    type: 'info', title: '本人確認書類の基礎判定マトリクス',
+                    evidence: [
+                        '【A類 (1点)】 マイナンバーカード、運転免許証、パスポート、在留カード、官公庁発行の顔写真付き証明書\n※顔写真があり、氏名・生年月日または住所が一致すること',
+                        '【B類 (2点)】 健康保険証、年金手帳、介護保険証、社員証、学生証、医療受給者証、資格確認書\n※氏名・生年月日または氏名・住所の記載があること',
+                        '【特例A類】 有効期限満了から6ヶ月以内のマイナンバーカード\n※更新申請に伴う本人確認に限り可'
+                    ]
+                },
+                'c1_exp_q': {
+                    type: 'question', text: '有効期限切れカードの状況は？',
+                    options: [
+                        { text: '更新申請の受取であり、満了から6ヶ月以内', next: 'c1_exp_ok' },
+                        { text: '満了から6ヶ月を超過、または同一性が著しく損なわれている', next: 'c1_exp_ng' }
+                    ]
+                },
+                'c1_exp_ok': {
+                    type: 'result', status: 'ok', title: '受理可能', basis: '総務省東北管区行政評価局「マイナンバーカードの更新手続に関する情報収集結果」',
+                    evidence: ['提示された旧カードと本人の同一性が確認できること']
+                },
+                'c1_exp_ng': {
+                    type: 'result', status: 'ng', title: '不可（特例A類として不可）', basis: '番号法施行令第13条、事務処理要領第5',
+                    evidence: ['再発行扱いとなり、再発行手数料が発生する可能性がある旨を案内']
+                },
+                'c1_add_q': {
+                    type: 'question', text: '運転免許証の住所変更の状況は？',
+                    options: [
+                        { text: '裏面に新住所が記載され、公安委員会の受領印がある', next: 'c1_add_ok' },
+                        { text: '裏面記載がなく、最新の住民票と不一致', next: 'c1_add_ng' }
+                    ]
+                },
+                'c1_add_ok': {
+                    type: 'result', status: 'ok', title: 'A類として完全受理', basis: '住民基本台帳事務処理要領第2章',
+                    evidence: ['裏面の公安委員会の印をコピー・確認資料として残すこと']
+                },
+                'c1_add_ng': {
+                    type: 'result', status: 'ng', title: '単独では不可', basis: '番号法施行規則第3条',
+                    evidence: ['住民票の写し', '公共料金領収書等による補完資料を求める']
+                },
+
+                // --- Category 2: 特殊な本人確認 ---
+                'c2_start': {
+                    type: 'question', text: '対象者の状況は？',
+                    options: [
+                        { text: '顔写真付き証明書を一点も持たない', next: 'c2_fac_q' },
+                        { text: '未成年の申請', next: 'c2_inf_q' }
+                    ]
+                },
+                'c2_fac_q': {
+                    type: 'question', text: '対象者の入所・療養状況は？',
+                    options: [
+                        { text: '施設入所者である', next: 'c2_fac_ok1' },
+                        { text: '自宅でケアマネジャーの支援を受けている', next: 'c2_fac_ok2' }
+                    ]
+                },
+                'c2_fac_ok1': {
+                    type: 'result', status: 'ok', title: '受理可能', basis: '総務省通知「本人確認書類が提示できない場合の取扱いについて」、事務処理要領',
+                    evidence: ['施設長が作成した「個人番号カード顔写真証明書」', 'B類書類']
+                },
+                'c2_fac_ok2': {
+                    type: 'result', status: 'ok', title: '受理可能', basis: '令和5年3月31日事務処理要領改訂',
+                    evidence: ['ケアマネジャー及び事業者の長が作成した「顔写真証明書」', 'B類書類']
+                },
+                'c2_inf_q': {
+                    type: 'question', text: '未成年者の年齢は？',
+                    options: [
+                        { text: '1歳未満の乳児 (顔写真省略希望)', next: 'c2_inf_ok1' },
+                        { text: '1歳以上15歳未満', next: 'c2_inf_ok2' }
+                    ]
+                },
+                'c2_inf_ok1': {
+                    type: 'result', status: 'ok', title: '顔写真の貼付を省略して受理可能', basis: '住民基本台帳法の一部を改正する法律(令和5年法律第48号)、事務処理要領',
+                    evidence: ['法定代理人の本人確認書類', '代理権確認資料（同一世帯の親なら省略可）']
+                },
+                'c2_inf_ok2': {
+                    type: 'result', status: 'ok', title: '受理可能', basis: '番号法施行規則第12条、事務処理要領',
+                    evidence: ['本人の本人確認書類', '法定代理人の本人確認書類', '代理権確認資料（戸籍謄本等。同一世帯は省略可）']
+                },
+
+                // --- Category 3: 代理人・来庁困難 ---
+                'c3_start': {
+                    type: 'question', text: 'ケースを選択してください',
+                    options: [
+                        { text: '来庁困難事由と必要疎明資料の一覧', next: 'c3_list' },
+                        { text: 'ひきこもり状態の住民の代理人交付', next: 'c3_hiki_q' },
+                        { text: '法定代理人(親権者/成年後見人)が来庁できない', next: 'c3_leg_q' }
+                    ]
+                },
+                'c3_list': {
+                    type: 'info', title: '来庁困難事由と必要疎明資料(エビデンス)',
+                    evidence: [
+                        '【病気・怪我】 診断書、入院診療計画書、領収書、診療明細書 (外出困難の具体的記述が必要)',
+                        '【障害】 障害者手帳、療育手帳、精神障害者保健福祉手帳',
+                        '【高齢(75歳以上)】 疎明資料不要(本人確認書類で年齢確認)。委任状に来庁困難の自己申告があれば可',
+                        '【長期出張・航海】 勤務先発行の証明書、駐在証明書 (短期出張は不可)',
+                        '【海外留学】 査証の写し、入学許可証、学生証の写し',
+                        '【妊婦】 母子健康手帳、妊婦健診の領収書'
+                    ]
+                },
+                'c3_hiki_q': {
+                    type: 'question', text: '公的支援機関への相談実績はありますか？',
+                    options: [
+                        { text: '公的支援機関(自立支援センター等)に相談しており、証明書が発行できる', next: 'c3_hiki_ok' },
+                        { text: '相談実績がなく、第三者の証明が困難', next: 'c3_hiki_ng' }
+                    ]
+                },
+                'c3_hiki_ok': {
+                    type: 'result', status: 'ok', title: '代理交付を認める', basis: '総務省事務連絡(令和5年3月31日)',
+                    evidence: ['公的支援機関(自立支援センター等)が発行する証明書']
+                },
+                'c3_hiki_ng': {
+                    type: 'result', status: 'warn', title: '証拠不十分で保留', basis: '行政手続法第7条',
+                    evidence: ['民生委員の事実確認や訪問調査を検討し、要件を満たすか確認する']
+                },
+                'c3_leg_q': {
+                    type: 'question', text: '来庁する代理人の属性は？',
+                    options: [
+                        { text: '法定代理人が選任した「復代理人」', next: 'c3_leg_ok1' },
+                        { text: '保佐人・補助人が来庁している', next: 'c3_leg_ok2' }
+                    ]
+                },
+                'c3_leg_ok1': {
+                    type: 'result', status: 'ok', title: '復代理人の手続きを認める', basis: '民法第104条、第106条',
+                    evidence: ['法定代理人が作成した復代理人への委任状', '法定代理人の代理権証明書類(戸籍等)']
+                },
+                'c3_leg_ok2': {
+                    type: 'result', status: 'warn', title: '代理行為目録の確認必須', basis: '住民基本台帳事務処理要領、民法',
+                    evidence: ['登記事項証明書の「代理行為目録」にマイナンバー関連事務等の代理権記載があれば可', '記載がなければ代理権なし。本人同伴等を求める']
+                },
+
+                // --- Category 4: 顔認証カード切替 ---
+                'c4_start': {
+                    type: 'question', text: '顔認証マイナンバーカードの手続き',
+                    options: [
+                        { text: '制限される機能一覧を確認', next: 'c4_list' },
+                        { text: '新規・更新時に「暗証番号を設定したくない」', next: 'c4_new_q' },
+                        { text: '既存カードを顔認証へ切替', next: 'c4_exist_q' }
+                    ]
+                },
+                'c4_list': {
+                    type: 'info', title: '顔認証カード：制限される機能一覧',
+                    evidence: [
+                        '【利用可能】 健康保険証利用、本人確認書類としての対面利用',
+                        '【利用不可】 コンビニ交付、マイナポータル利用、署名用電子証明書(e-Tax等)'
+                    ]
+                },
+                'c4_new_q': {
+                    type: 'question', text: '来庁者は誰ですか？',
+                    options: [
+                        { text: '本人が来庁', next: 'c4_new_ok1' },
+                        { text: '代理人が来庁', next: 'c4_new_ok2' }
+                    ]
+                },
+                'c4_new_ok1': {
+                    type: 'result', status: 'ok', title: '交付可能', basis: '総務省事務連絡',
+                    evidence: ['暗証番号設定なしで交付処理', '署名用電子証明書は搭載不可となる旨を必ず告知する']
+                },
+                'c4_new_ok2': {
+                    type: 'result', status: 'ok', title: '代理交付要件を満たせば交付可能', basis: '総務省事務連絡',
+                    evidence: ['交付通知書に「設定しない」旨のチェックがあること', '通常の代理人交付要件(来庁困難の疎明等)を満たしていること']
+                },
+                'c4_exist_q': {
+                    type: 'question', text: '来庁者は誰ですか？',
+                    options: [
+                        { text: '本人が来庁', next: 'c4_exist_ok1' },
+                        { text: '任意代理人が来庁', next: 'c4_exist_ok2' }
+                    ]
+                },
+                'c4_exist_ok1': {
+                    type: 'result', status: 'ok', title: '即日切替可能', basis: '令和5年12月27日事務連絡',
+                    evidence: ['本人のマイナンバーカード持参']
+                },
+                'c4_exist_ok2': {
+                    type: 'result', status: 'warn', title: '条件次第で即日可', basis: '総務省事務連絡',
+                    evidence: ['委任状に現在の「暗証番号」の記載があれば即日切替可能', '暗証番号が不明な場合は、暗証番号初期化を伴うため「照会書兼回答書」による二段階郵送方式となる']
+                },
+
+                // --- Category 5: 電子証明書・暗証番号 ---
+                'c5_start': {
+                    type: 'question', text: '手続きの種類',
+                    options: [
+                        { text: '住所変更(転入)時の処理', next: 'c5_mov_q' },
+                        { text: '暗証番号ロック解除', next: 'c5_lock_q' }
+                    ]
+                },
+                'c5_mov_q': {
+                    type: 'question', text: '来庁者は誰ですか？',
+                    options: [
+                        { text: '本人が来庁', next: 'c5_mov_ok1' },
+                        { text: '代理人が来庁', next: 'c5_mov_ok2' }
+                    ]
+                },
+                'c5_mov_ok1': {
+                    type: 'result', status: 'ok', title: '転入届と同時に即日再発行可能', basis: '公的個人認証法 第13条',
+                    evidence: ['失効した署名用電子証明書を即日発行']
+                },
+                'c5_mov_ok2': {
+                    type: 'result', status: 'warn', title: '条件次第で即日可', basis: '公的個人認証法',
+                    evidence: ['本人が暗証番号を記入・封緘した照会書兼回答書があれば即日可', '持参がない場合は、後日郵送回答方式となる']
+                },
+                'c5_lock_q': {
+                    type: 'question', text: '来庁者は誰ですか？',
+                    options: [
+                        { text: '本人がA類書類を持参して来庁', next: 'c5_lock_ok1' },
+                        { text: '本人来庁不可(代理人来庁)', next: 'c5_lock_ok2' }
+                    ]
+                },
+                'c5_lock_ok1': {
+                    type: 'result', status: 'ok', title: '即日解除・再設定可能', basis: '公的個人認証法 第17条',
+                    evidence: ['マイナンバーカード', '本人確認書類A類(ロック解除・初期化用)']
+                },
+                'c5_lock_ok2': {
+                    type: 'result', status: 'ng', title: '即日不可 (郵送方式のみ)', basis: '住民基本台帳事務処理要領',
+                    evidence: ['代理人による即日初期化は不可', '照会書兼回答書の郵送手続きを案内する']
+                },
+
+                // --- Category 6: 郵便転送・DV避難 ---
+                'c6_start': {
+                    type: 'question', text: '郵便不達・送付先の事案',
+                    options: [
+                        { text: '郵便転送設定による不達', next: 'c6_fwd_q' },
+                        { text: 'DV等による避難', next: 'c6_dv_q' }
+                    ]
+                },
+                'c6_fwd_q': {
+                    type: 'question', text: '対象者の居住実態は？',
+                    options: [
+                        { text: '居住実態が住民票になく、転送先が真の居所', next: 'c6_fwd_ng' },
+                        { text: '一時的不在(入院等)で、居住実態は住民票にある', next: 'c6_fwd_ok' }
+                    ]
+                },
+                'c6_fwd_ng': {
+                    type: 'result', status: 'ng', title: '交付停止', basis: '住民基本台帳法 第22条、事務処理要領 第5',
+                    evidence: ['適正な住民票異動(転出・転入)を指導する']
+                },
+                'c6_fwd_ok': {
+                    type: 'result', status: 'ok', title: '送付または窓口交付可能', basis: '住民基本台帳事務処理要領 第5-4',
+                    evidence: ['転送解除後の再送手配', 'または窓口での対面交付を案内']
+                },
+                'c6_dv_q': {
+                    type: 'question', text: '支援措置の状況は？',
+                    options: [
+                        { text: 'DV等支援措置を受けている', next: 'c6_dv_ok1' },
+                        { text: '支援措置はないが、避難証明書類がある', next: 'c6_dv_ok2' }
+                    ]
+                },
+                'c6_dv_ok1': {
+                    type: 'result', status: 'ok', title: '特例送付可能', basis: '住民基本台帳事務処理要領',
+                    evidence: ['居所情報をシステム登録し、避難先へ直接郵送等が可能']
+                },
+                'c6_dv_ok2': {
+                    type: 'result', status: 'warn', title: '原則支援措置登録後', basis: '住民基本台帳事務処理要領 別添1',
+                    evidence: ['まずは支援措置の申請を促す', '緊急性が高い場合は、個別判断で特例送付先変更を検討']
+                },
+
+                // --- Category 7: 氏名の振り仮名 ---
+                'c7_start': {
+                    type: 'question', text: '振り仮名の登録内容',
+                    options: [
+                        { text: '住民票の振り仮名登録・特殊な読み方の希望', next: 'c7_furi_q' },
+                        { text: '旧氏(旧姓)の振り仮名追加', next: 'c7_old_ok' }
+                    ]
+                },
+                'c7_furi_q': {
+                    type: 'question', text: '希望する読み方は？',
+                    options: [
+                        { text: '氏名の読み方として一般に認められる', next: 'c7_furi_ok' },
+                        { text: 'キラキラネーム的で、漢字との関連性が全くない', next: 'c7_furi_ng' }
+                    ]
+                },
+                'c7_furi_ok': {
+                    type: 'result', status: 'ok', title: '登録・カード反映可能', basis: '住民基本台帳法 第7条、戸籍法の一部を改正する法律',
+                    evidence: ['申請通りに受理']
+                },
+                'c7_furi_ng': {
+                    type: 'result', status: 'ng', title: '市町村長による是正勧告', basis: '戸籍法改正規定、法務省指針',
+                    evidence: ['住民に説明し改善を求める', '改善がなければ拒否し、職権で一般的な読みを記載する']
+                },
+                'c7_old_ok': {
+                    type: 'result', status: 'ok', title: '追記欄・ICチップに記録可能', basis: 'マイナンバー法施行令の一部を改正する政令',
+                    evidence: ['住民票に旧氏が併記され、読み方が公証済みであること']
+                },
+
+                // --- Category 8: 再交付手数料 ---
+                'c8_start': {
+                    type: 'question', text: '状況を選択してください',
+                    options: [
+                        { text: '手数料の有償/無償の原則判定', next: 'c8_list' },
+                        { text: '盗難に遭ったが、警察への届出が未了', next: 'c8_stolen_ng' }
+                    ]
+                },
+                'c8_list': {
+                    type: 'info', title: '再交付手数料の判定基準',
+                    evidence: [
+                        '【有償 (1,000円)】 本人の過失による紛失・破損、返納後の再申請(自主返納等)',
+                        '【無償】 天災(罹災証明書が必要)、ICチップの自然故障(外傷なし)、追記欄の余白不足'
+                    ]
+                },
+                'c8_stolen_ng': {
+                    type: 'result', status: 'ng', title: '無償再交付は不可', basis: '事務処理要領',
+                    evidence: ['警察の「受理番号」がない限り無償化は不可', '自費での支払いを求めるか、警察で受理番号取得後に再来庁するよう案内する']
+                }
+            }
+        };
+
+        // 【2】UI描画ロジック
+        const contentDiv = document.getElementById('appContent');
+        const searchInput = document.getElementById('searchInput');
+
+        function renderHome() {
+            let html = '<h2 class="text-gray-500 font-bold mb-4 ml-1 text-sm">業務カテゴリ</h2><div class="grid grid-cols-2 gap-4">';
+            db.categories.forEach(cat => {
+                html += `
+                    <button onclick="renderNode('${cat.id}_start')" class="bg-white rounded-2xl shadow-sm hover:shadow-md active:scale-95 transition p-5 flex flex-col items-center justify-center border border-gray-100 relative overflow-hidden group">
+                        <div class="absolute inset-0 opacity-0 group-active:opacity-10 transition ${cat.color}"></div>
+                        <div class="w-12 h-12 rounded-full ${cat.color} text-white flex items-center justify-center mb-3 shadow-inner">
+                            <i data-lucide="${cat.icon}" class="w-6 h-6"></i>
+                        </div>
+                        <span class="font-bold text-gray-700 text-sm text-center leading-tight">${cat.title}</span>
+                    </button>
+                `;
+            });
+            html += '</div>';
+            contentDiv.innerHTML = html;
+            lucide.createIcons();
+        }
+
+        function renderNode(nodeId) {
+            window.scrollTo(0, 0);
+            const node = db.nodes[nodeId];
+            if (!node) return;
+
+            contentDiv.classList.remove('fade-in');
+            void contentDiv.offsetWidth; // trigger reflow
+            contentDiv.classList.add('fade-in');
+
+            if (node.type === 'question') {
+                let html = `
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-6">
+                        <h2 class="text-xl font-bold text-gray-800 mb-6 flex items-start leading-snug">
+                            <i data-lucide="help-circle" class="w-6 h-6 text-blue-500 mr-2 flex-shrink-0 mt-0.5"></i>
+                            ${node.text}
+                        </h2>
+                        <div class="space-y-3">
+                `;
+                node.options.forEach(opt => {
+                    html += `
+                        <button onclick="renderNode('${opt.next}')" class="w-full text-left bg-gray-50 hover:bg-blue-50 active:bg-blue-100 border border-gray-200 rounded-xl p-4 transition shadow-sm flex items-center justify-between group">
+                            <span class="font-semibold text-gray-700 text-base leading-snug pr-4">${opt.text}</span>
+                            <i data-lucide="chevron-right" class="w-5 h-5 text-gray-400 group-hover:text-blue-500 flex-shrink-0"></i>
+                        </button>
+                    `;
+                });
+                html += '</div></div>';
+                contentDiv.innerHTML = html;
+            } 
+            else if (node.type === 'result' || node.type === 'info') {
+                let statusColor = 'bg-blue-100 border-blue-400 text-blue-800';
+                let iconName = 'info';
+                
+                if (node.status === 'ok') { statusColor = 'bg-green-100 border-green-500 text-green-900'; iconName = 'check-circle'; }
+                else if (node.status === 'ng') { statusColor = 'bg-red-100 border-red-500 text-red-900'; iconName = 'x-circle'; }
+                else if (node.status === 'warn') { statusColor = 'bg-amber-100 border-amber-500 text-amber-900'; iconName = 'alert-triangle'; }
+
+                let html = `
+                    <div class="${statusColor} border-l-4 p-5 rounded-r-xl shadow-sm mb-6 flex items-center">
+                        <i data-lucide="${iconName}" class="w-8 h-8 mr-3 flex-shrink-0"></i>
+                        <h2 class="text-2xl font-bold">${node.title}</h2>
+                    </div>
+                `;
+
+                if (node.basis) {
+                    html += `
+                        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-4">
+                            <div class="bg-gray-100 px-4 py-2 border-b border-gray-200 flex items-center">
+                                <i data-lucide="book-open" class="w-4 h-4 text-gray-500 mr-2"></i>
+                                <h3 class="font-bold text-gray-700 text-sm">法的根拠・通知</h3>
+                            </div>
+                            <div class="p-4 text-gray-800 text-sm leading-relaxed font-medium">
+                                ${node.basis}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                if (node.evidence && node.evidence.length > 0) {
+                    html += `
+                        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-8">
+                            <div class="bg-yellow-50 px-4 py-2 border-b border-yellow-200 flex items-center">
+                                <i data-lucide="clipboard-list" class="w-4 h-4 text-yellow-600 mr-2"></i>
+                                <h3 class="font-bold text-yellow-800 text-sm">必要な疎明資料・チェックリスト</h3>
+                            </div>
+                            <ul class="p-4 space-y-3">
+                    `;
+                    node.evidence.forEach(ev => {
+                        html += `
+                            <li class="flex items-start">
+                                <i data-lucide="check-square" class="w-5 h-5 text-green-500 mr-2 flex-shrink-0 mt-0.5"></i>
+                                <span class="text-gray-800 text-sm font-semibold leading-relaxed whitespace-pre-line">${ev}</span>
+                            </li>
+                        `;
+                    });
+                    html += `</ul></div>`;
+                }
+
+                html += `
+                    <button onclick="goHome()" class="w-full bg-blue-600 text-white font-bold text-lg p-4 rounded-xl shadow-md hover:bg-blue-700 active:bg-blue-800 transition flex items-center justify-center">
+                        <i data-lucide="rotate-ccw" class="w-5 h-5 mr-2"></i> 最初からやり直す
+                    </button>
+                `;
+                contentDiv.innerHTML = html;
+            }
+            lucide.createIcons();
+        }
+
+        // 検索機能
+        searchInput.addEventListener('input', function(e) {
+            const query = e.target.value.trim();
+            if (!query) {
+                goHome();
+                return;
+            }
+
+            let results = [];
+            for (const [id, node] of Object.entries(db.nodes)) {
+                let textToSearch = (node.text || '') + ' ' + (node.title || '') + ' ' + (node.basis || '');
+                if (node.options) node.options.forEach(o => textToSearch += ' ' + o.text);
+                if (node.evidence) textToSearch += ' ' + node.evidence.join(' ');
+                
+                if (textToSearch.includes(query)) {
+                    // 親ノードを推測して表示タイトルを整形
+                    let displayTitle = node.title || node.text;
+                    results.push({ id, title: displayTitle, type: node.type });
+                }
+            }
+
+            let html = `<h2 class="text-gray-500 font-bold mb-4 ml-1 text-sm">「${query}」の検索結果 (${results.length}件)</h2>`;
+            if (results.length === 0) {
+                html += `<div class="bg-white p-6 rounded-xl text-center text-gray-500">見つかりませんでした</div>`;
+            } else {
+                html += '<div class="space-y-3">';
+                results.forEach(r => {
+                    let badge = r.type === 'question' ? '<span class="bg-blue-100 text-blue-700 text-xs px-2 py-1 rounded ml-2">質問</span>' : '<span class="bg-green-100 text-green-700 text-xs px-2 py-1 rounded ml-2">結果</span>';
+                    html += `
+                        <button onclick="renderNode('${r.id}')" class="w-full text-left bg-white hover:bg-gray-50 border border-gray-200 rounded-xl p-4 transition shadow-sm flex items-center justify-between">
+                            <span class="font-semibold text-gray-700 pr-2">${r.title} ${badge}</span>
+                            <i data-lucide="arrow-right-circle" class="w-5 h-5 text-gray-400"></i>
+                        </button>
+                    `;
+                });
+                html += '</div>';
+            }
+            contentDiv.innerHTML = html;
+            lucide.createIcons();
+        });
+
+        function goHome() {
+            searchInput.value = '';
+            renderHome();
+        }
+
+        // 【初期描画と外部Service Workerの登録】
+        window.onload = () => {
+            goHome();
+            if ('serviceWorker' in navigator) {
+                // 外部の物理ファイル sw.js を登録
+                navigator.serviceWorker.register('./sw.js')
+                    .then(() => console.log('PWA: Service Worker Registered'))
+                    .catch(err => console.error('PWA: Registration Failed', err));
+            }
+        };
+
+    </script>
+</body>
+</html>
