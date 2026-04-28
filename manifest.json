@@ -1,19 +1,20 @@
 {
   "name": "マイナンバー窓口判断支援アプリ",
-  "short_name": "窓口ナビ",
+  "short_name": "マイナ窓口判断ナビ",
   "description": "自治体窓口職員のためのマイナンバー業務判断支援ツール",
-  "start_url": "./index.html",
+  "start_url": "index.html",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#1e40af",
   "icons": [
     {
-      "src": "https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/72x72/1f1ef-1f1f5.png",
-      "sizes": "72x72",
+      "src": "icon.png",
+      "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/512x512/1f1ef-1f1f5.png",
+      "src": "icon.png",
       "sizes": "512x512",
       "type": "image/png"
     }

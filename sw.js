@@ -1,6 +1,6 @@
-const CACHE_NAME = 'mynumber-navi-v1';
-const ASSETS_TO_CACHE = [
-  './',
+const CACHE_NAME = 'mynumber-navi-v4';
+
+const ASSETS = [
   './index.html',
   './manifest.json',
   './icon.png',
@@ -9,17 +9,19 @@ const ASSETS_TO_CACHE = [
 ];
 
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS_TO_CACHE);
-    })
+    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS))
   );
 });
 
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
 self.addEventListener('fetch', (event) => {
+  // ネットワーク優先、失敗したらキャッシュを返す
   event.respondWith(
-    caches.match(event.request).then((response) => {
-      return response || fetch(event.request);
-    })
+    fetch(event.request).catch(() => caches.match(event.request))
   );
 });
